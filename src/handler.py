@@ -10,7 +10,8 @@ import asyncio
 import time
 import logging
 from smart_open import open
-
+from datetime import datetime
+import re
 
 logger = logging.getLogger()
 
@@ -64,6 +65,24 @@ def _get_log_type(log_type=None):
     return log_type or os.getenv("LOG_TYPE") or os.getenv("LOGTYPE", "")
 
 
+def _get_timestamp_regex(timestamp_regex=None):
+    """
+    This functions gets the timestamp regex from env vars.
+    The regex need to contain a group named timestamp.
+    Example: ^(?:http|https|h2|grpcs|ws|wss)\s(?P<timestamp>[0-9-T:\.]{26}Z)
+    """
+    return timestamp_regex or os.getenv("TIMESTAMP_REGEX", "")
+
+
+def _get_datetime_format(datetime_format=None):
+    """
+    This functions gets the datetime format from env vars.
+    This need to match with what will be returned by the regular expression
+    Example: %Y-%m-%dT%H:%M:%S.%fZ
+    """
+    return datetime_format or os.getenv("DATETIME_FORMAT", "")
+
+
 def _setting_console_logging_level():
     """
     Determines whether or not debug logging should be enabled based on the env var.
@@ -102,6 +121,27 @@ def _compress_payload(data):
     return payload
 
 
+def _extract_timestamp(line, timestamp_regex, datetime_format):
+    """
+    Return a timestamp extracted from a regular expression
+    """
+    try:
+        return int(datetime.strptime(timestamp_regex.match(line).group('timestamp'), datetime_format).timestamp()*1000000)
+    except:
+        logger.warning('failing parsing timestamp in line, using current timestamp')
+        return int(datetime.now().timestamp()*1000000)
+
+
+def _create_message(line, timestamp_regex, datetime_format):
+    """
+    Return a message with or without timestamp
+    """
+    if isinstance(timestamp_regex, re.Pattern) and len(datetime_format) > 0:
+        timestamp = _extract_timestamp(line, timestamp_regex, datetime_format)
+        return {'message': line, 'timestamp': timestamp}
+    return {'message': line}
+
+
 def _package_log_payload(data):
     """
     Packages up a MELT request for log messages
@@ -109,8 +149,13 @@ def _package_log_payload(data):
     logLines = data["entry"]
     log_messages = []
 
+    timestamp_regex = _get_timestamp_regex()
+    if timestamp_regex:
+        timestamp_regex = re.compile(timestamp_regex)
+    datetime_format = _get_datetime_format()
+
     for line in logLines:
-        log_messages.append({'message': line})
+        log_messages.append(_create_message(line, timestamp_regex, datetime_format))
     packaged_payload = [
         {
             "common": {
